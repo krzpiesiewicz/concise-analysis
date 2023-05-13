@@ -1,23 +1,7 @@
 import numpy as np
-import pandas as pd
+from sklearn.model_selection import RepeatedStratifiedKFold, RepeatedKFold
 
-from sklearn.metrics import (
-    balanced_accuracy_score,
-    accuracy_score,
-    roc_auc_score,
-    r2_score,
-    median_absolute_error,
-    mean_absolute_error,
-    mean_absolute_percentage_error,
-    confusion_matrix,
-)
-
-from sklearn.model_selection import RepeatedKFold, RepeatedStratifiedKFold
-
-
-def auc_score(clf, X, y):
-    y_pred = clf.predict_proba(X)[:, 1]
-    return roc_auc_score(y, y_pred)
+from concise_analysis.metrics import get_scoring
 
 
 def get_scores(
@@ -35,37 +19,68 @@ def get_scores(
         challenge_pred_collector=None,
         get_confusion_matrix=False,
         classif=True,
-        mape_score=True
+        predict_proba=False,
+        auc_score=True,
+        mape_score=True,
+        metrics="default",
+        extra_metrics=None,
+        dependent_metrics=None  # a list of functions which calculate extra
+                    # metrics depending on basic ones.
+                    # Signature:
+                    # dict(metric_name, value) -> (new_name, new_value)
 ):
+    if metrics == "default":
+        if classif:
+            metrics = ["acc", "bacc"]
+            if auc_score:
+                metrics += ["auc"]
+            if get_confusion_matrix:
+                metrics += ["confusion"]
+        else:
+            metrics = ["r2", "mae", "mse", "medae"]
+            if mape_score:
+                metrics += ["mape"]
+    if extra_metrics is not None:
+        metrics += extra_metrics
     scores = dict()
     sets = [(X_train, y_train, "train", train_pred_collector)]
     if X_val is not None:
         sets.append((X_val, y_val, "val", val_pred_collector))
     if X_test is not None:
         sets.append((X_test, y_test, "test", test_pred_collector))
+
     for X, y, set_name, pred_collector in sets:
         y_pred = model.predict(X)
+        y_pred_proba = model.predict_proba(
+            X) if classif and predict_proba else None
         if pred_collector is not None:
-            pred_collector.add_preds(y.index, y_pred)
-        if classif:
-            acc = accuracy_score(y, y_pred)
-            bacc = balanced_accuracy_score(y, y_pred)
-            auc = auc_score(model, X, y)
-            scores[set_name] = {"acc": acc, "bacc": bacc, "auc": auc}
-            if get_confusion_matrix:
-                scores[set_name]["confusion"] = confusion_score(y, y_pred)
-        else:
-            r2 = r2_score(y, y_pred)
-            mae = mean_absolute_error(y, y_pred)
-            medae = median_absolute_error(y, y_pred)
-            scores[set_name] = {"r2": r2, "mae": mae, "medae": medae}
-            if mape_score:
-                mape = mean_absolute_percentage_error(y, y_pred)
-                scores[set_name]["mape"] = mape
+            pred_collector.add_preds(y.index, y_pred, y_pred_proba)
+        scores[set_name] = {}
+
+        for metric in metrics:
+            scoring = get_scoring(metric)
+            metric_name = metric if type(metric) is str else scoring["name"]
+            score_func = scoring["scoring"]
+            if scoring["pred_type"] == "proba":
+                if y_pred_proba is None:
+                    y_pred_proba = model.predict_proba(X)
+                score = score_func(y, y_pred_proba)
+            else:
+                score = score_func(y, y_pred)
+            scores[set_name][metric_name] = score
+
+        if dependent_metrics is not None:
+            for get_depnt_score in dependent_metrics:
+                metric_name, score = get_depnt_score(scores[set_name])
+                scores[set_name][metric_name] = score
+
     if X_challenge is not None:
         y_pred = model.predict(X_challenge)
+        y_pred_proba = model.predict_proba(
+            X_challenge) if classif and predict_proba else None
         if challenge_pred_collector is not None:
-            challenge_pred_collector.add_preds(X_challenge.index, y_pred)
+            challenge_pred_collector.add_preds(X_challenge.index, y_pred,
+                                               y_pred_proba)
     return scores
 
 
@@ -87,7 +102,7 @@ def get_cv_scores(
         classif=True,
         stratify=True,
         list_to_save_models=None,
-        **kwargs
+        **kwargs,
 ):
     mean_scores = dict()
     k_fold_contructor = (
@@ -121,7 +136,7 @@ def get_cv_scores(
             X_challenge=X_challenge,
             challenge_pred_collector=challenge_pred_collector,
             classif=classif,
-            **kwargs
+            **kwargs,
         )
         for set_name, score_dct in scores.items():
             if not set_name in mean_scores:
@@ -134,13 +149,21 @@ def get_cv_scores(
         for metric in score_dct.keys():
             values = score_dct[metric]
             score_dct[metric] = dict()
-            score_dct[metric]["std"] = np.std(values)
-            score_dct[metric]["mean"] = np.mean(values)
+            n = len(values)
+            mean_values = sum(values) / n
+            score_dct[metric]["mean"] = mean_values
+            score_dct[metric]["std"] = (
+                    sum([d ** 2 for d in
+                         [val - mean_values for val in values]]) ** (0.5)
+                    / n
+            )
     return mean_scores
 
 
-def print_scores(scores, baseline_scores=None, return_str=False,
-                 show_stds=False, newlines=2):
+def print_scores(
+        scores, baseline_scores=None, return_str=False, show_stds=False,
+        newlines=2, space=7
+):
     str_buffer = ""
     j = 0
     for set_name, set_scores in scores.items():
@@ -149,51 +172,62 @@ def print_scores(scores, baseline_scores=None, return_str=False,
         if baseline_scores is not None and set_name in baseline_scores:
             baseline_set_scores = baseline_scores[set_name]
 
-        space = " " * (6 - len(set_name))
+        setname_space = " " * (6 - len(set_name))
         i = 0
         for score_name, score in set_scores.items():
-            i += 1
             score_mean = score["mean"] if type(score) is dict else score
-            baseline_score = None
-            if baseline_set_scores is not None and score_name in baseline_set_scores:
-                baseline_score = baseline_set_scores[score_name]
-                baseline_score_mean = baseline_score["mean"] if type(
-                    baseline_score) is dict else baseline_score
-            str_buffer += f"{set_name}_{score_name}:{space} {score_mean:.4f}"
-            if baseline_score is not None:
-                diff = score_mean - baseline_score_mean
-                if abs(diff) <= 1e-4:
-                    diff = 0
-                change = "=" if abs(diff) <= 1e-4 else (
-                    "+" if diff > 0 else "-")
-                str_buffer += f" ({change}{abs(diff):.4f})"
-            if i < len(set_scores):
-                str_buffer += " " * 7
-        if show_stds:
-            str_buffer += "\n"
-            i = 0
-            for score_name, score in set_scores.items():
+            if np.isscalar(score_mean):
                 i += 1
-                score_std = score["std"] if type(score) is dict else score
-                baseline_score_std = None
                 baseline_score = None
                 if baseline_set_scores is not None and score_name in baseline_set_scores:
                     baseline_score = baseline_set_scores[score_name]
-                    baseline_score_std = baseline_score["std"] if type(
-                        baseline_score) is dict else None
-                space_std = " " * (6 + 1 + len(score_name) + 1 - len("std:"))
-                str_buffer += f"{' ' * len('std:')}{space_std}±{score_std:.4f}"
-                if baseline_score_std is not None:
-                    diff = score_std - baseline_score_std
+                    baseline_score_mean = (
+                        baseline_score["mean"]
+                        if type(baseline_score) is dict
+                        else baseline_score
+                    )
+                str_buffer += f"{set_name}_{score_name}:{setname_space} {score_mean:.4f}"
+                if baseline_score is not None:
+                    diff = score_mean - baseline_score_mean
                     if abs(diff) <= 1e-4:
                         diff = 0
                     change = "=" if abs(diff) <= 1e-4 else (
                         "+" if diff > 0 else "-")
                     str_buffer += f" ({change}{abs(diff):.4f})"
-                elif baseline_score is not None:
-                    str_buffer += " " * (5 + 5)
                 if i < len(set_scores):
-                    str_buffer += " " * 7
+                    str_buffer += " " * space
+        if show_stds:
+            str_buffer += "\n"
+            i = 0
+            for score_name, score in set_scores.items():
+                score_std = score["std"] if type(score) is dict else score
+                if np.isscalar(score_std):
+                    i += 1
+                    baseline_score_std = None
+                    baseline_score = None
+                    if (
+                            baseline_set_scores is not None
+                            and score_name in baseline_set_scores
+                    ):
+                        baseline_score = baseline_set_scores[score_name]
+                        baseline_score_std = (
+                            baseline_score["std"] if type(
+                                baseline_score) is dict else None
+                        )
+                    std_space = " " * (
+                            6 + 1 + len(score_name) + 1 - len("std:"))
+                    str_buffer += f"{' ' * len('std:')}{std_space}±{score_std:.4f}"
+                    if baseline_score_std is not None:
+                        diff = score_std - baseline_score_std
+                        if abs(diff) <= 1e-4:
+                            diff = 0
+                        change = "=" if abs(diff) <= 1e-4 else (
+                            "+" if diff > 0 else "-")
+                        str_buffer += f" ({change}{abs(diff):.4f})"
+                    elif baseline_score is not None:
+                        str_buffer += " " * (5 + 5)
+                    if i < len(set_scores):
+                        str_buffer += " " * space
         if j < len(scores):
             str_buffer += "\n\n"
     str_buffer += "\n" * newlines
@@ -201,20 +235,3 @@ def print_scores(scores, baseline_scores=None, return_str=False,
         return str_buffer
     else:
         print(str_buffer)
-
-
-def confusion_score(y_true, y_pred, labels=[0, 1], normalize="true", **kwargs):
-    cm = confusion_matrix(y_true, y_pred, labels=labels, normalize=normalize,
-                          **kwargs)
-    cm = pd.DataFrame(cm).set_index(
-        pd.MultiIndex.from_tuples(list(zip(["True"] * len(labels), labels)))
-    )
-    cm.columns = pd.MultiIndex.from_tuples(
-        list(zip(["Predicted"] * len(labels), labels))
-    )
-    return cm
-
-
-def normalize_confusion_matrix(cm):
-    for idx, row in cm.iterrows():
-        cm.loc[idx] /= np.sum(row)
