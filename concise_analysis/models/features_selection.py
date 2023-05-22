@@ -23,11 +23,14 @@ def print_importances(
         indices,
         names=None,
         model_name=None,
+        max_ftrs=None,
         newlines_begin=0
 ):
     model_name = model_name + " " if model_name is not None else ""
     print("\n" * newlines_begin + f"{model_name}features ranking:")
     for i in range(len(importances)):
+        if max_ftrs is not None and i == max_ftrs:
+            break
         print(
             f"{i + 1:2}. import. {importances[indices[i]]:.3f} (std: {importances_stds[indices[i]]:.3f})"
             + f"  –  {names[indices[i]]}" if names is not None else ""
@@ -35,9 +38,11 @@ def print_importances(
     print("")
 
 
-def print_forests_importances(forests, names=None, newlines_begin=0):
+def print_forests_importances(forests, names=None, max_ftrs=None,
+                              newlines_begin=0):
     importances, importances_stds, indices, names = forests_importances(
         forests, names=names)
     print_importances(importances, importances_stds, indices, names,
+                      max_ftrs=max_ftrs,
                       model_name="Random forest",
                       newlines_begin=newlines_begin)
