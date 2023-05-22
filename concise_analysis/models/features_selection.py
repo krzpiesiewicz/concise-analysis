@@ -28,7 +28,7 @@ def print_importances(
 ):
     model_name = model_name + " " if model_name is not None else ""
     print("\n" * newlines_begin + f"{model_name}features ranking:")
-    for i in range(len(importances)):
+    for i in range(min(len(importances), len(indices))):
         if max_ftrs is not None and i == max_ftrs:
             break
         print(
