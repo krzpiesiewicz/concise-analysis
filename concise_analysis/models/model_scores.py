@@ -25,9 +25,9 @@ def get_scores(
         metrics="default",
         extra_metrics=None,
         dependent_metrics=None  # a list of functions which calculate extra
-                    # metrics depending on basic ones.
-                    # Signature:
-                    # dict(metric_name, value) -> (new_name, new_value)
+        # metrics depending on basic ones.
+        # Signature:
+        # dict(metric_name, value) -> (new_name, new_value)
 ):
     if metrics == "default":
         if classif:
@@ -166,13 +166,18 @@ def print_scores(
 ):
     str_buffer = ""
     j = 0
+    max_set_name = int(np.max(list(map(len, scores.keys()))))
     for set_name, set_scores in scores.items():
         j += 1
         baseline_set_scores = None
         if baseline_scores is not None and set_name in baseline_scores:
             baseline_set_scores = baseline_scores[set_name]
 
-        setname_space = " " * (6 - len(set_name))
+        setname_space = " " * (max_set_name + 1 - len(set_name))
+
+        def get_float_str(x):
+            return f"{x:.4f}"
+
         i = 0
         for score_name, score in set_scores.items():
             score_mean = score["mean"] if type(score) is dict else score
@@ -186,21 +191,23 @@ def print_scores(
                         if type(baseline_score) is dict
                         else baseline_score
                     )
-                str_buffer += f"{set_name}_{score_name}:{setname_space} {score_mean:.4f}"
+                mean_str = get_float_str(score_mean)
+                str_buffer += f"{set_name}_{score_name}:{setname_space} {mean_str}"
                 if baseline_score is not None:
                     diff = score_mean - baseline_score_mean
                     if abs(diff) <= 1e-4:
                         diff = 0
                     change = "=" if abs(diff) <= 1e-4 else (
                         "+" if diff > 0 else "-")
-                    str_buffer += f" ({change}{abs(diff):.4f})"
+                    str_buffer += f" ({change}{get_float_str(abs(diff))})"
                 if i < len(set_scores):
                     str_buffer += " " * space
         if show_stds:
             str_buffer += "\n"
             i = 0
             for score_name, score in set_scores.items():
-                score_std = score["std"] if type(score) is dict else score
+                score_mean = score["mean"] if type(score) is dict else score
+                score_std = score["std"] if type(score) is dict else 0
                 if np.isscalar(score_std):
                     i += 1
                     baseline_score_std = None
@@ -214,16 +221,19 @@ def print_scores(
                             baseline_score["std"] if type(
                                 baseline_score) is dict else None
                         )
-                    std_space = " " * (
-                            6 + 1 + len(score_name) + 1 - len("std:"))
-                    str_buffer += f"{' ' * len('std:')}{std_space}±{score_std:.4f}"
+                    mean_str = get_float_str(score_mean)
+                    std_str = get_float_str(score_std)
+                    std_space = " " * (len(mean_str) - len(std_str)
+                                       + len(set_name) + 1 + len(
+                                score_name) + 1) + setname_space
+                    str_buffer += f"{std_space}±{std_str}"
                     if baseline_score_std is not None:
                         diff = score_std - baseline_score_std
                         if abs(diff) <= 1e-4:
                             diff = 0
                         change = "=" if abs(diff) <= 1e-4 else (
                             "+" if diff > 0 else "-")
-                        str_buffer += f" ({change}{abs(diff):.4f})"
+                        str_buffer += f" ({change}{get_float_str(abs(diff))})"
                     elif baseline_score is not None:
                         str_buffer += " " * (5 + 5)
                     if i < len(set_scores):
